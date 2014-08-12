@@ -1,0 +1,13 @@
+Daemon for managing mappings between FQDN domain names and IP's.
+
+Daemon listen on unix socket and accept simple string (simple nc) like
+update <list of fqdn names splitted by \n> or drop <list of fqdn names>
+
+If update command emitted, then alluvium do dns lookups and resolve fqdn 
+into all assigned ip's, and then put them into ipset. And then, each
+dns zone ttl expire do refresh for fqdn <-> ip resolution.
+
+If drop command emitted, then simply remove ip's from ipset and stop
+dns zone watching.
+
+
