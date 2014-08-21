@@ -104,7 +104,7 @@ bool clifd_event(int fd, ipset_map &isets, struct request &req)
 	tok = strtok(readb + readc, "\n");
 
 	if (req.request == req_types::invalid) {
-	    char cmd[4096], set[4096];
+	    char cmd[sizeof(readb)], set[sizeof(readb)];
 
 	    if (tok != NULL &&
 		sscanf(tok, "%s %s", cmd, set) == 2 &&
@@ -178,6 +178,8 @@ int main(int const argc, char const * const* const argv)
     char const *ctl_path = def_ctl_path;
 
     req.request = req_types::invalid;
+    if (argc == 2 && argv[1] != NULL)
+	ctl_path = argv[1];
     {
 	sigset_t set;
 
@@ -200,20 +202,19 @@ int main(int const argc, char const * const* const argv)
 	    return 1;
 	}
     }
-    if (argc == 2 && argv[1] != NULL)
-	ctl_path = argv[1];
-    cmdfd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (cmdfd < 0) {
-	syslog(LOG_ERR, "Can't create socket");
+    if (!s6dns_init()) {
+	syslog(LOG_ERR, "Can't init DNS subsystem");
 	return 1;
     }
-
-    if (!s6dns_init())
-	return 1;
 
     {
 	struct sockaddr_un serv_addr;
 
+	cmdfd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (cmdfd < 0) {
+	    syslog(LOG_ERR, "Can't create socket");
+	    return 1;
+	}
 	remove(ctl_path); // ok to fail
 	memset(&serv_addr, 0, sizeof(serv_addr));
 	serv_addr.sun_family = AF_UNIX;
@@ -224,12 +225,11 @@ int main(int const argc, char const * const* const argv)
 	    syslog(LOG_ERR, "Can't bind to %s socket", ctl_path);
 	    return 1;
 	}
-    }
-
-    if (listen(cmdfd, 1) < 0) {
-	syslog(LOG_ERR, "Error listening on %s socket", ctl_path);
-	close(cmdfd);
-	return 1;
+	if (listen(cmdfd, 1) < 0) {
+	    syslog(LOG_ERR, "Error listening on %s socket", ctl_path);
+	    close(cmdfd);
+	    return 1;
+	}
     }
 
     while (true) {
