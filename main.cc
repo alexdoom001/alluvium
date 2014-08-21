@@ -42,7 +42,7 @@ struct request {
 
 void renew_ttl_queue(addr_queue &addrq, ipset_map &isets)
 {
-    addrq = {};
+    addrq = addr_queue();
     for (auto&& iset : isets)
 	for (auto&& addr : iset.second.get_addresses())
 	    addrq.push(addr);
@@ -262,7 +262,7 @@ int main(int const argc, char const * const* const argv)
 
 	ret = poll(pfd, sizeof(pfd)/sizeof(pfd[0]), -1);
 	if (ret < 0)
-	    throw logic_error("poll() failed");
+	    throw runtime_error("poll() failed");
 	else if (ret > 0) {
 	    if (pfd[0].revents & POLLIN) {
 		if (!sigfd_event(sigfd, addrq, isets))

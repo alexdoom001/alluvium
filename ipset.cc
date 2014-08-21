@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -20,29 +21,41 @@ void Ipset::reload()
 {
     FILE *wfd;
     int res;
+    bool updated = false;
 
+    /* can't reliably use netlink interface with old ipsets */
     wfd = popen("ipset -R &>/dev/null", "w");
     if (wfd == NULL)
 	throw runtime_error("popen() error");
 
-    fprintf(wfd, "-N %s iphash\n", name.c_str());
+    fprintf(wfd, "-N %s\\$ iphash\n", name.c_str());
     for (auto&& address : addresses)
 	for (auto&& ip : address.get_ips()) {
 	    char nameb[INET_ADDRSTRLEN];
 
 	    if (inet_ntop(AF_INET, &ip, nameb, INET_ADDRSTRLEN) != NULL)
-		fprintf(wfd, "-A %s %s\n", name.c_str(), nameb);
+		fprintf(wfd, "-A %s\\$ %s\n", name.c_str(), nameb);
 	    else
 		throw runtime_error("inet_ntop() badness");
 	}
     fprintf(wfd, "COMMIT\n");
     res = pclose(wfd);
-    if (WIFEXITED(res) && WEXITSTATUS(res) == 0)
-	update_needed = false;
-    else {
-	update_needed = true;
-	throw logic_error("some ipset err");
+    if (WIFEXITED(res) && WEXITSTATUS(res) == 0) {
+	string b;
+
+	b = "ipset -W " + name + "\\$ " + name;
+	res = system(b.c_str());
+	if (WIFEXITED(res) && WEXITSTATUS(res) == 0) {
+	    b = "ipset -X " + name + "\\$";
+	    res = system(b.c_str());
+	    if (WIFEXITED(res) && WEXITSTATUS(res) == 0) {
+		update_needed = false;
+		updated = true;
+	    }
+	}
     }
+    if (!updated)
+	throw logic_error("some ipset err");
 }
 
 void Ipset::flag_updated()

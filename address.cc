@@ -108,6 +108,7 @@ void Address::renew()
 	std::sort(new_ips.begin(), new_ips.end());
     if (new_ips != ips) {
 	ips = std::move(new_ips);
+	ips.shrink_to_fit();
 	ipset.flag_updated();
     }
 }
