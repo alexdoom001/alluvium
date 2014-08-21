@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <functional>
 #include <stdexcept>
+#include <utility>
 
 extern "C" {
 #include <skalibs/tai.h>
@@ -12,6 +14,15 @@ extern "C" {
 #include "ipset.hh"
 
 using namespace std;
+
+/* well, no other sane place for these */
+bool operator <(const struct in_addr& x, const struct in_addr& y) {
+    return x.s_addr < y.s_addr;
+}
+
+bool operator ==(const struct in_addr& x, const struct in_addr& y) {
+    return x.s_addr == y.s_addr;
+}
 
 bool Address::greater_ttl(const Address &lhs, const Address &rhs)
 {
@@ -41,8 +52,8 @@ void Address::renew()
 {
     tain_t deadline;
     s6dns_domain_t s6dom;
-    bool cleared_ips = false;
     int ret;
+    vector<struct in_addr> new_ips;
 
     function<int (s6dns_message_rr_t const *rr, char const *packet,
 		  unsigned int packetlen, unsigned int pos,
@@ -65,15 +76,10 @@ void Address::renew()
 	    else
 		ttl_exp += 86400 * 3;
 
-	    if (!cleared_ips) {
-		ips.clear();
-		cleared_ips = true;
-	    }
-
 	    for (inaddr = reinterpret_cast<struct in_addr *> (s6ips.s), 
 		     eofaddr = inaddr + (s6ips.len / sizeof(*eofaddr));
 		 inaddr < eofaddr; inaddr++)
-		ips.push_back(*inaddr);
+		new_ips.push_back(*inaddr);
 	    stralloc_free(&s6ips);
 	    return 1;
 	};
@@ -84,22 +90,26 @@ void Address::renew()
 	throw logic_error("Unable to create s6dns_domain_t");
     ret = s6dns_resolve_parse_g(&s6dom, S6DNS_T_A, s6dns_callback, &handle_dns,
 				&deadline);
-    if (ret < 0)
+    if (ret < 0) {
 	/*
 	 * error resolving, retry a minute later, but don't nuke cached
 	 * addresses
 	 */
 	ttl_exp = get_clock_secs() + 60;
-    else if (ret == 0) {
+	return;
+    } else if (ret == 0)
 	/*
 	 * resolved successfuly, but got no results, nuke cached addresses
 	 * and retry about 4 hours later
 	 */
-	ips.clear();
 	ttl_exp = get_clock_secs() + 3600 * 4;
-    } /* anything else is OK and was processed by callback */
 
-    ipset.flag_updated();
+    if (!new_ips.empty())
+	std::sort(new_ips.begin(), new_ips.end());
+    if (new_ips != ips) {
+	ips = std::move(new_ips);
+	ipset.flag_updated();
+    }
 }
 
 const std::vector<struct in_addr> Address::get_ips() const
