@@ -42,6 +42,7 @@ void Address::renew()
     tain_t deadline;
     s6dns_domain_t s6dom;
     bool cleared_ips = false;
+    int ret;
 
     function<int (s6dns_message_rr_t const *rr, char const *packet,
 		  unsigned int packetlen, unsigned int pos,
@@ -51,16 +52,18 @@ void Address::renew()
 	     unsigned int section) -> int
 	{
 	    stralloc s6ips;
-	    struct timespec tsp;
 	    struct in_addr *inaddr, *eofaddr;
 
 	    memset(&s6ips, 0, sizeof(s6ips));
 	    if (!s6dns_message_parse_answer_a(rr, packet, packetlen, pos,
 					      section, &s6ips))
 		return 0;
-	    if (clock_gettime(CLOCK_MONOTONIC_COARSE, &tsp) != 0)
-		return 0;
-	    ttl_exp = tsp.tv_sec + rr->ttl;
+	    ttl_exp = get_clock_secs();
+	    /* ttl of more than 3 days is probably wrong */
+	    if (rr->ttl < (86400 * 3))
+		ttl_exp += rr->ttl;
+	    else
+		ttl_exp += 86400 * 3;
 
 	    if (!cleared_ips) {
 		ips.clear();
@@ -79,9 +82,23 @@ void Address::renew()
 	throw runtime_error("problem with TAI time management");
     if (!s6dns_domain_fromstring_noqualify_encode(&s6dom, name.c_str(), name.length()))
 	throw logic_error("Unable to create s6dns_domain_t");
-    if (s6dns_resolve_parse_g(&s6dom, S6DNS_T_A, s6dns_callback, &handle_dns,
-			      &deadline) < 0)
-	throw logic_error("Error resolving name");
+    ret = s6dns_resolve_parse_g(&s6dom, S6DNS_T_A, s6dns_callback, &handle_dns,
+				&deadline);
+    if (ret < 0)
+	/*
+	 * error resolving, retry a minute later, but don't nuke cached
+	 * addresses
+	 */
+	ttl_exp = get_clock_secs() + 60;
+    else if (ret == 0) {
+	/*
+	 * resolved successfuly, but got no results, nuke cached addresses
+	 * and retry about 4 hours later
+	 */
+	ips.clear();
+	ttl_exp = get_clock_secs() + 3600 * 4;
+    } /* anything else is OK and was processed by callback */
+
     ipset.flag_updated();
 }
 
@@ -92,18 +109,14 @@ const std::vector<struct in_addr> Address::get_ips() const
 
 bool Address::is_expired() const
 {
-    struct timespec ts;
-
-    if (clock_gettime(CLOCK_MONOTONIC_COARSE, &ts) != 0)
-	return true;
-    if (ts.tv_sec >= ttl_exp)
+    if (get_timediff() <= 0)
 	return true;
     return false;
 }
 
-time_t Address::get_ttl() const
+time_t Address::get_timediff() const
 {
-    return ttl_exp;
+    return (ttl_exp - get_clock_secs());
 }
 
 int Address::s6dns_callback(s6dns_message_rr_t const *rr, char const *packet,
@@ -116,4 +129,13 @@ int Address::s6dns_callback(s6dns_message_rr_t const *rr, char const *packet,
 						   unsigned int pos,
 						   unsigned int section)> *> (stuff);
     return (*callback)(rr, packet, packetlen, pos, section);
+}
+
+time_t Address::get_clock_secs()
+{
+    struct timespec ts;
+
+    if (clock_gettime(CLOCK_MONOTONIC_COARSE, &ts) != 0)
+	throw runtime_error("clock_gettime() failed, no way!");
+    return ts.tv_sec;
 }

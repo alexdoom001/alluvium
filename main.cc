@@ -1,3 +1,4 @@
+#include <climits>
 #include <functional>
 #include <queue>
 #include <stdexcept>
@@ -5,11 +6,11 @@
 #include <unordered_map>
 #include <utility>
 
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <syslog.h>
 #include <sys/poll.h>
-#include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
@@ -17,6 +18,7 @@
 
 extern "C" {
 #include <s6-dns/s6dns.h>
+#include <skalibs/selfpipe.h>
 }
 
 #include "ipset.hh"
@@ -58,9 +60,32 @@ void timeout_event(addr_queue &addrq, ipset_map &isets)
 	iset.second.reload_if_needed();
 }
 
-void signal_event()
+bool sigfd_event(int fd, addr_queue &addrq, ipset_map &isets)
 {
-    
+    int sign;
+
+    sign = selfpipe_read();
+    if (sign < 0 || sign == SIGTERM)
+	return false;
+    switch (sign) {
+    case SIGUSR2: /* renew and reload */
+	while (!addrq.empty()) {
+	    auto a = const_cast<Address &> (addrq.top().get());
+
+	    addrq.pop();
+	    a.renew();
+	}
+	renew_ttl_queue(addrq, isets);
+	/* fallthrough */
+    case SIGUSR1: /* reload */
+	for (auto& iset : isets)
+	    iset.second.reload();
+	break;
+    case SIGALRM:
+	timeout_event(addrq, isets);
+    default: /* ignore */ ;
+    }
+    return true;
 }
 
 bool clifd_event(int fd, ipset_map &isets, struct request &req)
@@ -153,7 +178,28 @@ int main(int const argc, char const * const* const argv)
     char const *ctl_path = def_ctl_path;
 
     req.request = req_types::invalid;
-//    sigfd = signalfd(-1, );
+    {
+	sigset_t set;
+
+	sigemptyset(&set);
+	sigaddset(&set, SIGHUP);
+	sigaddset(&set, SIGINT);
+	sigaddset(&set, SIGPIPE);
+	sigaddset(&set, SIGALRM);
+	sigaddset(&set, SIGTERM);
+	sigaddset(&set, SIGUSR1);
+	sigaddset(&set, SIGUSR2);
+
+	sigfd = selfpipe_init();
+	if (sigfd < 0) {
+	    syslog(LOG_ERR, "Can't create signal fd");
+	    return 1;
+	}
+	if (selfpipe_trapset(&set) != 0) {
+	    syslog(LOG_ERR, "Can't listen to signals we need");
+	    return 1;
+	}
+    }
     if (argc == 2 && argv[1] != NULL)
 	ctl_path = argv[1];
     cmdfd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -188,8 +234,7 @@ int main(int const argc, char const * const* const argv)
 
     while (true) {
 	struct pollfd pfd[3];
-	struct timespec ts;
-	int timeout = -1, ret;
+	int ret;
 
 	pfd[0].fd = sigfd;
 	pfd[0].events = POLLIN;
@@ -199,22 +244,30 @@ int main(int const argc, char const * const* const argv)
 	pfd[2].events = POLLIN;
 
 	if (!addrq.empty()) {
-	    if (clock_gettime(CLOCK_MONOTONIC_COARSE, &ts) != 0)
-		throw runtime_error("clock_gettime() failed");
+	    time_t diff;
+	    unsigned int altime;
 
-	    timeout = (addrq.top().get().get_ttl() - ts.tv_sec + 1) * 1000 * 1000;
-	    if (timeout < 0)
-		timeout = 0;
+	    diff = addrq.top().get().get_timediff();
+	    if (diff < 0)
+		diff = 0;
+	    /* round to the next minute (or 64 seconds really) */
+	    diff = (((diff >> 5) + 1) << 5);
+	    if (diff > UINT_MAX)
+		altime = UINT_MAX;
+	    else
+		altime = diff;
+	    /* use alarm because ms-precision poll timeout is too much */
+	    alarm(altime);
 	}
-	ret = poll(pfd, sizeof(pfd)/sizeof(pfd[0]), timeout);
-	if (ret == 0)
-	    timeout_event(addrq, isets);
-	else if (ret < 0)
+
+	ret = poll(pfd, sizeof(pfd)/sizeof(pfd[0]), -1);
+	if (ret < 0)
 	    throw logic_error("poll() failed");
 	else if (ret > 0) {
-	    if (pfd[0].revents & POLLIN)
-		break;
-	    else if (pfd[1].revents & POLLIN) {
+	    if (pfd[0].revents & POLLIN) {
+		if (!sigfd_event(sigfd, addrq, isets))
+		    break;
+	    } else if (pfd[1].revents & POLLIN) {
 		int newclifd;
 
 		newclifd = accept(cmdfd, NULL, NULL);

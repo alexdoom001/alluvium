@@ -22,10 +22,11 @@ public:
     void renew();
     const std::vector<struct in_addr> get_ips() const;
     bool is_expired() const;
-    time_t get_ttl() const;
+    time_t get_timediff() const;
 
 private:
     static s6dns_message_rr_func_t s6dns_callback;
+    static time_t get_clock_secs();
 
     Ipset &ipset; /* 1:1 mapping, we tradeoff possible address duplicates for simplicity */
     std::string name;
