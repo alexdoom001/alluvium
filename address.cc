@@ -8,6 +8,8 @@ extern "C" {
 #include <skalibs/stralloc.h>
 }
 
+#include <idna.h>
+#include <stdlib.h>
 #include <time.h>
 
 #include "address.hh"
@@ -29,10 +31,16 @@ bool Address::greater_ttl(const Address &lhs, const Address &rhs)
     return lhs.ttl_exp > rhs.ttl_exp;
 }
 
-Address::Address(Ipset &ips, std::string &n) :
-    ipset(ips),
-    name(n)
+Address::Address(Ipset &ips, const std::string &n) :
+    ipset(ips)
 {
+    char *idnname;
+
+    if (idna_to_ascii_8z(n.c_str(), &idnname, IDNA_ALLOW_UNASSIGNED) == IDNA_SUCCESS) {
+	name = string(idnname);
+	free(idnname);
+    } else
+	throw logic_error("bad domain name");
 /*
  * We might cheat here is future, because renew() is time-consuming process
     struct timespec tsp;
@@ -43,6 +51,14 @@ Address::Address(Ipset &ips, std::string &n) :
  */
     renew();
 }
+
+
+Address::Address(Address &&obj) :
+    ipset(obj.ipset),
+    name(std::move(obj.name)),
+    ttl_exp(obj.ttl_exp),
+    ips(std::move(obj.ips))
+{}
 
 /*
  * Theoretically, it's possible to create many contexts for many addresses and then use

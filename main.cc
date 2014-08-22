@@ -42,7 +42,7 @@ struct request {
 
 void renew_ttl_queue(addr_queue &addrq, ipset_map &isets)
 {
-    addrq = addr_queue();
+    addrq = addr_queue(&Address::greater_ttl);
     for (auto&& iset : isets)
 	for (auto&& addr : iset.second.get_addresses())
 	    addrq.push(addr);
@@ -88,7 +88,7 @@ bool sigfd_event(int fd, addr_queue &addrq, ipset_map &isets)
     return true;
 }
 
-bool clifd_event(int fd, ipset_map &isets, struct request &req)
+ssize_t clifd_event(int fd, ipset_map &isets, struct request &req)
 {
     static char readb[4096];
     static unsigned int readc;
@@ -97,41 +97,59 @@ bool clifd_event(int fd, ipset_map &isets, struct request &req)
     ret = read(fd, readb + readc, sizeof(readb) - readc - 1);
     if (ret > 0) {
 	char *tok;
+	bool splittok = false;
 
-	readb[ret] = '\0';
-	if (strstr(readb, "\n\n") != NULL)
+	readb[readc + ret] = '\0';
+	if (readb[readc + ret - 1] != '\n')
+	    splittok = true;
+	if (strstr(readb, "\n\n") != NULL ||
+	    (readc == 0 && ret == 1 && !splittok))
 	    ret = 0;
 	tok = strtok(readb + readc, "\n");
 
 	if (req.request == req_types::invalid) {
 	    char cmd[sizeof(readb)], set[sizeof(readb)];
+	    const char *err = NULL;
 
 	    if (tok != NULL &&
-		sscanf(tok, "%s %s", cmd, set) == 2 &&
-		(strcmp(cmd, "update") == 0 ||
-		 strcmp(cmd, "drop") == 0)) {
-		req.ipset = string(set);
-		if (strcmp(cmd, "update") == 0)
-		    req.request = req_types::update;
-		else
-		    req.request = req_types::drop;
-		tok = strtok(NULL, "\n");
+		sscanf(tok, "%s %s", cmd, set) == 2) {
+		if ((strcmp(cmd, "update") == 0 ||
+		     strcmp(cmd, "drop") == 0)) {
+		    if (strlen(set) <= Ipset::max_name_length) {
+			req.ipset = string(set);
+			if (strcmp(cmd, "update") == 0)
+			    req.request = req_types::update;
+			else
+			    req.request = req_types::drop;
+			tok = strtok(NULL, "\n");
+		    } else
+			err = "bad set name\n";
+		} else
+		    err = "wrong command\n";
 	    } else
+		err = "some garbage on input\n";
+	    if (err != NULL) {
+		write(fd, err, strlen(err));
 		ret = -1;
+	    }
 	}
 	if (req.request == req_types::update && tok != NULL) {
-	    char *oldtok = tok;
+	    if (!splittok) {
+		do {
+		    req.addrs.emplace_back(tok);
+		    tok = strtok(NULL, "\n");
+		} while (tok != NULL);
+		readc = 0;
+	    } else {
+		char *oldtok = tok;
 
-	    while (tok != NULL) {
-		req.addrs.emplace_back(string(tok));
-		oldtok = tok;
-		tok = strtok(NULL, "\n");
-	    }
-	    if (ret != 0) {
+		while ((tok = strtok(NULL, "\n")) != NULL) {
+		    req.addrs.emplace_back(oldtok);
+		    oldtok = tok;
+		}
 		readc = strlen(oldtok);
 		memmove(readb, oldtok, readc);
-	    } else
-		readc = 0;
+	    }
 	}
     }
 
@@ -147,11 +165,15 @@ bool clifd_event(int fd, ipset_map &isets, struct request &req)
 	{
 	    auto oldset = isets.find(req.ipset);
 
-	    if (oldset != isets.end())
-		oldset->second.update(req.addrs);
-	    else
-		isets.emplace(piecewise_construct, forward_as_tuple(req.ipset),
-			      forward_as_tuple(req.ipset, req.addrs));
+	    try {
+		if (oldset != isets.end())
+		    oldset->second.update(req.addrs);
+		else
+		    isets.emplace(piecewise_construct, forward_as_tuple(req.ipset),
+				  forward_as_tuple(req.ipset, req.addrs));
+	    } catch (const exception &e) {
+		retstr = string("error: ") + e.what();
+	    }
 	}
 	    break;
 	case req_types::invalid: ;
@@ -164,9 +186,9 @@ bool clifd_event(int fd, ipset_map &isets, struct request &req)
 	req.ipset.clear();
 	req.addrs.clear();
 	close(fd);
-	return false;
+	readc = 0;
     }
-    return true;
+    return ret;
 }
 
 int main(int const argc, char const * const* const argv)
@@ -177,6 +199,7 @@ int main(int const argc, char const * const* const argv)
     struct request req;
     char const *ctl_path = def_ctl_path;
 
+    openlog("alluvium", 0, LOG_DAEMON);
     req.request = req_types::invalid;
     if (argc == 2 && argv[1] != NULL)
 	ctl_path = argv[1];
@@ -232,6 +255,8 @@ int main(int const argc, char const * const* const argv)
 	}
     }
 
+    syslog(LOG_NOTICE, "started");
+
     while (true) {
 	struct pollfd pfd[3];
 	int ret;
@@ -278,7 +303,13 @@ int main(int const argc, char const * const* const argv)
 			clifd = newclifd;
 		}
 	    } else if (pfd[2].revents & POLLIN) {
-		if (!clifd_event(clifd, isets, req))
+		ssize_t r;
+
+		r = clifd_event(clifd, isets, req);
+		if (r == 0) {
+		    renew_ttl_queue(addrq, isets);
+		    clifd = -1;
+		} else if (r < 0)
 		    clifd = -1;
 	    }
 	}

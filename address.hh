@@ -18,7 +18,9 @@ class Address
 public:
     static bool greater_ttl(const Address &lhs, const Address &rhs);
 
-    Address(Ipset &ips, std::string &n);
+    Address(Ipset &ips, const std::string &n);
+    Address(const Address& a) = delete;
+    Address(Address &&obj);
     void renew();
     const std::vector<struct in_addr> get_ips() const;
     bool is_expired() const;
