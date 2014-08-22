@@ -78,25 +78,27 @@ void Address::renew()
 	     unsigned int packetlen, unsigned int pos,
 	     unsigned int section) -> int
 	{
-	    stralloc s6ips;
-	    struct in_addr *inaddr, *eofaddr;
+	    if ((section == 2) && (rr->rtype == S6DNS_T_A)) {
+		stralloc s6ips;
+		struct in_addr *inaddr, *eofaddr;
 
-	    memset(&s6ips, 0, sizeof(s6ips));
-	    if (!s6dns_message_parse_answer_a(rr, packet, packetlen, pos,
-					      section, &s6ips))
-		return 0;
-	    ttl_exp = get_clock_secs();
-	    /* ttl of more than 3 days is probably wrong */
-	    if (rr->ttl < (86400 * 3))
-		ttl_exp += rr->ttl;
-	    else
-		ttl_exp += 86400 * 3;
+		memset(&s6ips, 0, sizeof(s6ips));
+		if (s6dns_message_parse_answer_a(rr, packet, packetlen, pos,
+						  section, &s6ips) <= 0)
+		    return 0;
+		ttl_exp = get_clock_secs();
+		/* ttl of more than 3 days is probably wrong */
+		if (rr->ttl < (86400 * 3))
+		    ttl_exp += rr->ttl;
+		else
+		    ttl_exp += 86400 * 3;
 
-	    for (inaddr = reinterpret_cast<struct in_addr *> (s6ips.s), 
-		     eofaddr = inaddr + (s6ips.len / sizeof(*eofaddr));
-		 inaddr < eofaddr; inaddr++)
-		new_ips.push_back(*inaddr);
-	    stralloc_free(&s6ips);
+		for (inaddr = reinterpret_cast<struct in_addr *> (s6ips.s),
+			 eofaddr = inaddr + (s6ips.len / sizeof(*eofaddr));
+		     inaddr < eofaddr; inaddr++)
+		    new_ips.push_back(*inaddr);
+		stralloc_free(&s6ips);
+	    }
 	    return 1;
 	};
 
@@ -113,7 +115,7 @@ void Address::renew()
 	 */
 	ttl_exp = get_clock_secs() + 60;
 	return;
-    } else if (ret == 0)
+    } else if (new_ips.empty())
 	/*
 	 * resolved successfuly, but got no results, nuke cached addresses
 	 * and retry about 4 hours later
@@ -132,6 +134,11 @@ void Address::renew()
 const std::vector<struct in_addr> Address::get_ips() const
 {
     return ips;
+}
+
+std::string const &Address::get_name() const
+{
+    return name;
 }
 
 bool Address::is_expired() const

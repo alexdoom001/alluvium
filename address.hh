@@ -25,6 +25,7 @@ public:
     const std::vector<struct in_addr> get_ips() const;
     bool is_expired() const;
     time_t get_timediff() const;
+    std::string const &get_name() const;
 
 private:
     static s6dns_message_rr_func_t s6dns_callback;

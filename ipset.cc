@@ -28,8 +28,8 @@ void Ipset::reload()
 	throw runtime_error("popen() error");
 
     fprintf(wfd, "-N %s$ iphash\n", name.c_str());
-    for (auto&& address : addresses)
-	for (auto&& ip : address.get_ips()) {
+    for (auto const& address : addresses)
+	for (auto const& ip : address.get_ips()) {
 	    char nameb[INET_ADDRSTRLEN];
 
 	    if (inet_ntop(AF_INET, &ip, nameb, INET_ADDRSTRLEN) != NULL)
@@ -61,7 +61,7 @@ void Ipset::reload_if_needed()
 void Ipset::update(const vector<string> &domains)
 {
     addresses.clear();
-    for (auto&& domain : domains)
+    for (auto &domain : domains)
 	addresses.emplace_back(*this, domain);
     addresses.shrink_to_fit();
     reload();

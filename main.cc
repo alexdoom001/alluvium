@@ -43,21 +43,23 @@ struct request {
 void renew_ttl_queue(addr_queue &addrq, ipset_map &isets)
 {
     addrq = addr_queue(&Address::greater_ttl);
-    for (auto&& iset : isets)
-	for (auto&& addr : iset.second.get_addresses())
-	    addrq.push(addr);
+    for (auto &iset : isets)
+	for (auto &addr : iset.second.get_addresses())
+	    addrq.push(std::cref(addr));
 }
 
 void timeout_event(addr_queue &addrq, ipset_map &isets)
 {
-    while (addrq.top().get().is_expired()) {
-	auto a = const_cast<Address &> (addrq.top().get());
-	addrq.pop();
-	a.renew();
-	addrq.push(a);
+    if (!addrq.empty()) {
+	while (addrq.top().get().is_expired()) {
+	    auto &a = const_cast<Address &> (addrq.top().get());
+	    addrq.pop();
+	    a.renew();
+	    addrq.push(std::cref(a));
+	}
+	for (auto &iset : isets)
+	    iset.second.reload_if_needed();
     }
-    for (auto& iset : isets)
-	iset.second.reload_if_needed();
 }
 
 bool sigfd_event(int fd, addr_queue &addrq, ipset_map &isets)
@@ -68,9 +70,43 @@ bool sigfd_event(int fd, addr_queue &addrq, ipset_map &isets)
     if (sign < 0 || sign == SIGTERM)
 	return false;
     switch (sign) {
+    case SIGHUP:
+	/* maybe redo with some file dump? */
+	for (auto const &iset : isets) {
+	    syslog(LOG_INFO, "managing set %s:", iset.first.c_str());
+	    for (auto const &addr : iset.second.get_addresses()) {
+		syslog(LOG_INFO, "  domain %s, timediff: %lli:", addr.get_name().c_str(),
+		       (long long int) addr.get_timediff());
+		for (auto const &ip : addr.get_ips()) {
+		    char nameb[INET_ADDRSTRLEN];
+
+		    if (inet_ntop(AF_INET, &ip, nameb, INET_ADDRSTRLEN) != NULL)
+			syslog(LOG_INFO, "    %s\n", nameb);
+		    else
+			syslog(LOG_INFO, "    (inet_ntop failed)");
+		}
+	    }
+	}
+	while (!addrq.empty()) {
+	    auto const &a = addrq.top().get();
+
+	    addrq.pop();
+	    syslog(LOG_INFO, "addr queue domain %s, timediff: %lli:", a.get_name().c_str(),
+		       (long long int) a.get_timediff());
+	    for (auto &ip : a.get_ips()) {
+		char nameb[INET_ADDRSTRLEN];
+
+		if (inet_ntop(AF_INET, &ip, nameb, INET_ADDRSTRLEN) != NULL)
+		    syslog(LOG_INFO, "  %s\n", nameb);
+		else
+		    syslog(LOG_INFO, "  (inet_ntop failed)");
+	    }
+	}
+	renew_ttl_queue(addrq, isets);
+	break;
     case SIGUSR2: /* renew and reload */
 	while (!addrq.empty()) {
-	    auto a = const_cast<Address &> (addrq.top().get());
+	    auto &a = const_cast<Address &> (addrq.top().get());
 
 	    addrq.pop();
 	    a.renew();
